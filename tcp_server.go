@@ -1,18 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"net"
 	"os"
 )
-
-type ProxiedConnection struct {
-	incoming_conn           *net.Conn
-	total_incoming_requests uint64
-	outgoing_conn           *net.Conn
-	total_outgoing_requests uint64
-}
 
 // List of backend server connections
 type BackendConnectionCfg struct {
@@ -24,6 +16,12 @@ type BackendConnectionMgr struct {
 	conn_map      map[string]net.Conn
 	conn_list     []*net.Conn
 	last_used_idx int
+}
+
+type Server struct {
+	listener         net.Listener
+	backend_conn_mgr *BackendConnectionMgr
+	backend_conn_cfg *BackendConnectionCfg
 }
 
 func CreateBackendConfig(servers []string) *BackendConnectionCfg {
@@ -56,14 +54,13 @@ func CreateBackendConnMgr(cfg *BackendConnectionCfg) *BackendConnectionMgr {
 }
 
 func (self *BackendConnectionMgr) GetNext() *net.Conn {
-	fmt.Println("Length of conn_list", len(self.conn_list))
 	fmt.Println(self.conn_list)
 	self.last_used_idx = (self.last_used_idx + 1) % len(self.conn_list)
 	fmt.Println("Last used index", self.last_used_idx)
 	return self.conn_list[self.last_used_idx]
 }
 
-func RunLoadBalancer(backend_servers []string) {
+func CreateServer(backend_servers []string) *Server {
 	service := ":1200"
 	tcpAddr, err := net.ResolveTCPAddr("tcp", service)
 	checkError(err)
@@ -74,30 +71,57 @@ func RunLoadBalancer(backend_servers []string) {
 	bkend_server_cfg := CreateBackendConfig(backend_servers)
 	bkend_conn_mgr := CreateBackendConnMgr(bkend_server_cfg)
 
-	// Run forever
-	for {
-		conn, err := listener.Accept()
-		checkError(err)
-
-		go manageProxiedConnection(bkend_conn_mgr, conn)
+	return &Server{
+		listener:         listener,
+		backend_conn_cfg: bkend_server_cfg,
+		backend_conn_mgr: bkend_conn_mgr,
 	}
-
 }
 
-func manageProxiedConnection(conn_mgr *BackendConnectionMgr, client_conn net.Conn) {
+func (self *Server) Start() {
+	// Run forever
 	for {
-		backend_conn := conn_mgr.GetNext()
-		wire_data, err := bufio.NewReader(client_conn).ReadString('\n')
-		fmt.Println("Data received from client", wire_data)
+		conn, err := self.listener.Accept()
 		checkError(err)
-		wr_bytes, err := (*backend_conn).Write([]byte(wire_data))
-		fmt.Println("Bytes written to backend", wr_bytes)
+		backend_conn := self.backend_conn_mgr.GetNext()
+		go self.HandleReadFromClient(conn, *backend_conn)
+		go self.HandleReadFromBackend(conn, *backend_conn)
+	}
+}
+
+func (self *Server) HandleReadFromClient(client_conn net.Conn, backend_conn net.Conn) {
+	for {
+		buffer := make([]byte, 512)
+		rd_n, err := client_conn.Read(buffer)
+		checkError(err)
+		if rd_n == 0 {
+			continue
+		}
+		fmt.Println("Read data from client", buffer)
+
+		_, err = backend_conn.Write(buffer[:rd_n])
+		checkError(err)
+	}
+}
+
+func (self *Server) HandleReadFromBackend(client_conn net.Conn, backend_conn net.Conn) {
+	for {
+		buffer := make([]byte, 512)
+		rd_n, err := backend_conn.Read(buffer)
+		checkError(err)
+		if rd_n == 0 {
+			continue
+		}
+		fmt.Println("Read data from the backend", buffer)
+
+		_, err = client_conn.Write(buffer[:rd_n])
 		checkError(err)
 	}
 }
 
 func main() {
-	RunLoadBalancer([]string{":6969", ":6969", ":6969"})
+	server := CreateServer([]string{":6969"})
+	server.Start()
 }
 
 func checkError(err error) {

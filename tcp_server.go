@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"load_balancer/worker_pool"
 	"net"
 	"os"
 )
@@ -15,6 +16,7 @@ type BackendConnectionMgr struct {
 	config        *BackendConnectionCfg
 	conn_map      map[string]net.Conn
 	conn_list     []*net.Conn
+	pool_context  worker_pool.PoolContext
 	last_used_idx int
 }
 
@@ -49,6 +51,7 @@ func CreateBackendConnMgr(cfg *BackendConnectionCfg) *BackendConnectionMgr {
 		config:        cfg,
 		conn_map:      cmap,
 		conn_list:     clist,
+		pool_context:  worker_pool.NewPool(5),
 		last_used_idx: -1,
 	}
 }
